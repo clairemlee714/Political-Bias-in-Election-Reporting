@@ -1,0 +1,118 @@
+import requests
+from bs4 import BeautifulSoup
+import pandas as pd
+import time
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
+}
+
+# -------------------------------------------------------------------
+# Per-outlet scrapers
+# -------------------------------------------------------------------
+
+def scrape_npr(url):
+    r = requests.get(url, headers=HEADERS)
+    soup = BeautifulSoup(r.text, "html.parser")
+    body = soup.find("div", class_="storytext")
+    return body.get_text(separator=" ", strip=True) if body else None
+
+def scrape_nypost(url):
+    r = requests.get(url, headers=HEADERS)
+    soup = BeautifulSoup(r.text, "html.parser")
+    body = soup.find("div", class_="entry-content")
+    return body.get_text(separator=" ", strip=True) if body else None
+
+def scrape_ap(url):
+    r = requests.get(url, headers=HEADERS)
+    soup = BeautifulSoup(r.text, "html.parser")
+    body = soup.find("div", class_="RichTextStoryBody")
+    return body.get_text(separator=" ", strip=True) if body else None
+
+def scrape_bbc(url):
+    r = requests.get(url, headers=HEADERS)
+    soup = BeautifulSoup(r.text, "html.parser")
+    blocks = soup.find_all("div", attrs={"data-component": "text-block"})
+    return " ".join(b.get_text(separator=" ", strip=True) for b in blocks) or None
+
+SCRAPERS = {
+    "npr.org":      scrape_npr,
+    "nypost.com":   scrape_nypost,
+    "apnews.com":   scrape_ap,
+    "bbc.com":      scrape_bbc,
+    "bbc.co.uk":    scrape_bbc
+}
+
+def scrape_body(url):
+    for domain, fn in SCRAPERS.items():
+        if domain in url:
+            return fn(url)
+    raise ValueError(f"No scraper found for: {url}")
+
+# -------------------------------------------------------------------
+# Main function — reads a tab from your Google Sheet CSV export,
+# scrapes body text, and saves an enriched CSV
+# -------------------------------------------------------------------
+
+def process_tab(input_csv, output_csv, delay=2):
+    """
+    input_csv  : CSV exported from one Google Sheet tab
+                 Expected columns: media_name, publish_date, title, url
+    output_csv : Where to save the enriched file with body text added
+    delay      : Seconds to wait between requests
+    """
+    df = pd.read_csv(input_csv)
+    bodies = []
+
+    for i, row in df.iterrows():
+        url = row["url"]
+        print(f"[{i+1}/{len(df)}] Scraping: {url}")
+        try:
+            body = scrape_body(url)
+            bodies.append(body)
+        except Exception as e:
+            print(f"  ERROR: {e}")
+            bodies.append(None)
+        time.sleep(delay)
+
+    df["body"] = bodies
+
+    # Report how many articles failed
+    n_failed = df["body"].isna().sum()
+    print(f"\n{len(df) - n_failed}/{len(df)} articles scraped successfully.")
+    if n_failed:
+        print(f"{n_failed} articles returned no body — check URLs or selectors.")
+
+    df.to_csv(output_csv, index=False)
+    print(f"Saved to {output_csv}")
+    return df
+
+# -------------------------------------------------------------------
+# USAGE — set your Downloads folder path, then run once per CSV
+# -------------------------------------------------------------------
+
+import os
+from google.colab import files
+
+# Upload all your CSVs at once — a file picker will appear
+uploaded = files.upload()
+
+# Files land in Colab's working directory
+DOWNLOADS = "/content"
+
+def path(filename):
+    return os.path.join(DOWNLOADS, filename)
+
+# Per-source tabs (general election coverage)
+npr_df    = process_tab(path("UDA News Data Collection - US Left-leaning (NPR).csv"),                    path("npr_scraped.csv"))
+nypost_df = process_tab(path("UDA News Data Collection - US Right-leaning (NYPost).csv"),                path("nypost_scraped.csv"))
+bbc_df    = process_tab(path("UDA News Data Collection - International Non-partisan (BBC News).csv"),    path("bbc_scraped.csv"))
+ap_df     = process_tab(path("UDA News Data Collection - US Non-partisan (APNews).csv"),                 path("ap_scraped.csv"))
+
+# Candidate-isolated tabs
+trump_df  = process_tab(path("UDA News Data Collection - Trump Across Sources.csv"),                     path("trump_scraped.csv"))
+biden_df  = process_tab(path("UDA News Data Collection - Biden Across Sources.csv"),                     path("biden_scraped.csv"))
